@@ -1,88 +1,194 @@
-#!/usr/bin/python
-import os
+#!/usr/bin/python3
 import time
-# import MySQLdb
 import requests
-from datetime import datetime
+import validators
+from datetime import datetime, timezone
+
+from settings import check_interval, max_ping
+from postgres import Postgresql
 
 
-def checkwebsite(url):
-    # print "Checking " + url + " for avalibility...\n\n"
+def epoch_to_timestamp_tz(epoch: int):
+    """
+    Function to convert epoch to timestamp with timezone
+    :param epoch: either epoch seconds or epoch milliseconds
+    """
+    if epoch > 100000000000:
+        # Assuming epoch milliseconds
+        epoch /= 1000
+    dt = datetime.utcfromtimestamp(epoch).astimezone()
+    return dt
+
+
+def check(website: dict):
+    """
+    This is the main checking function
+    :param website: The website/proxy object
+    :return: the result in the form of a dict
+    """
+    test_url = website['url'] + website['test_path']
+    if validators.url(website['test_path']):
+        print(f"Testing {website['url']} -> {website['test_path']} ... ", end="")
+        test_url = website['test_path']
+    else:
+        print(f"Testing {website['url'] + website['test_path']} ... ", end="")
+
+    result = {
+        "up": False,
+        "ping": None,
+        "return_code": 0,
+        "test_reason": None
+    }
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+    }
+
+    start_time = time.time()
     try:
-        r = requests.get(url, timeout=10)
-        return True
-    except:
-        return False
+        response = requests.get(test_url, timeout=max_ping, headers=headers)
+        end_time = time.time()
+        result["ping"] = end_time - start_time
+        result["return_code"] = response.status_code
+        if result["return_code"] >= 300 or 200 > result["return_code"]:
+            result["test_reason"] = f"Return code not satisfied: {result['return_code']}"
+        elif website["test_match"] in response.text:
+            result["up"] = True
+        else:
+            result["test_reason"] = "Test match not found"
+    except requests.exceptions.Timeout:
+        result["test_reason"] = f"Timeout {max_ping}s"
+    except Exception as e:
+        result["test_reason"] = e
+
+    if result["ping"] is None:
+        end_time = time.time()
+        result["ping"] = end_time - start_time
+    if result["ping"] > max_ping:
+        result["up"] = False
+
+    return result
 
 
-# Press the green button in the gutter to run the script.
 if __name__ == '__main__':
-    folder_path = os.path.dirname(os.path.realpath(__file__))
+
+    # Checking if PostgreSQL is running
+    psql = Postgresql()
+    if not psql.up:
+        exit(1)
 
     while True:
-        with open('/var/www/html/hidden/mysql_c', 'r') as f:
-            creds = f.read().split("\n")
+        websites = []
+        websites_psql = psql.get_all("website", "id")
+        proxies_psql = psql.get_all("proxy_list", "id")
+        print()
+        for website_psql in websites_psql:
+            website = website_psql._asdict()
+            website["proxies"] = []
+            for proxy_psql in proxies_psql:
+                proxy = proxy_psql._asdict()
+                if website["id"] == proxy["web_id"]:
+                    if proxy["test_match"] is None:
+                        proxy["test_match"] = website["test_match"]
+                    if proxy["test_path"] is None:
+                        proxy["test_path"] = website["test_path"]
+                    website["proxies"].append(proxy)
+            websites.append(website)
+        """
+        After this, the "websites" now looks like this kind of:
+        {
+            "added_time": "2023-07-14 16:39:14.800135+02:00",
+            "description": "blah bllahblhalbhalbhalblahblablh",
+            "id": 3,
+            "last_active": "1970-01-01 01:00:00+01:00",
+            "last_checked": "1970-01-01 01:00:00+01:00",
+            "name": "Website Name",
+            "ping": 0.35,
+            "return_code": 200,
+            "test_match": "/static/main.js",
+            "test_path": "https://apibay.org/q.php?q=pcnt:recent",
+            "test_reason": null,
+            "up": true,
+            "url": "https://example.com",
+            "proxies": [
+                {
+                    "id": 2,
+                    "web_id": 3,
+                    "added_time": "2023-07-15 12:28:35.474263+02:00",
+                    "last_active": "1970-01-01 01:00:00+01:00",
+                    "last_checked": "1970-01-01 01:00:00+01:00",
+                    "official": false,
+                    "ping": 1.51,
+                    "return_code": 200,
+                    "test_match": "<a href=\"magnet:?xt=urn:btih:",
+                    "test_path": "/recent",
+                    "test_reason": null,
+                    "up": true,
+                    "url": "https://test.ru"
+                },
+                {
+                    ...
+                },
+                ...
+            ]
+        }
+        """
 
-        f.close()
-        # host:		creds[0]
-        # uname:	creds[1]
-        # psswd:	creds[2]
-        # db:		creds[3]
+        def print_result(r):
+            if r["test_reason"] is not None:
+                print(r["test_reason"])
+            elif not r["up"]:
+                print("FAILED")
+            elif r["up"]:
+                print("OK")
 
-        db = MySQLdb.connect(host=creds[0],
-                             user=creds[1],
-                             passwd=creds[2],
-                             db=creds[3])
 
-        # Create a Cursor object to execute queries.
-        cur = db.cursor()
-        db.autocommit(True)
-        # cur.execute("UPDATE proxylist SET ping='2.20' WHERE id=1")
+        # Now start the checking
+        for website in websites:
+            result = check(website)
+            print_result(result)
+            query = {
+                "table": "website",
+                "row": {
+                    "ping": result["ping"],
+                    "return_code": result["return_code"],
+                    "up": result["up"],
+                    "test_reason": result["test_reason"]
+                },
+                "where": {
+                    "id": website["id"]
+                }
+            }
+            if result["up"]:
+                query["row"]["last_active"] = epoch_to_timestamp_tz(int(datetime.now().strftime('%s')))
+            psql.update(query)
+            for proxy in website["proxies"]:
+                result = check(proxy)
+                print_result(result)
+                query = {
+                    "table": "proxy_list",
+                    "row": {
+                        "ping": result["ping"],
+                        "return_code": result["return_code"],
+                        "up": result["up"],
+                        "test_reason": result["test_reason"]
+                    },
+                    "where": {
+                        "id": proxy["id"]
+                    }
+                }
+                if result["up"]:
+                    query["row"]["last_active"] = epoch_to_timestamp_tz(int(datetime.now().strftime('%s')))
+                psql.update(query)
 
-        # Select data from table using SQL query.
-        cur.execute("SELECT * FROM proxylist")
+        # Lastly update the last_checked for everything
+        query = {
+            "table": "website",
+            "row": {
+                "last_checked": epoch_to_timestamp_tz(int(datetime.now().strftime('%s')))
+            }
+        }
+        psql.update(query, True)
 
-        # print the first and second columns
-        for row in cur.fetchall():
-            url = ""
-            if row[1].count('/') > 2:  # If slashes is more than 2
-                url = row[1].rsplit('/', 1)[0]
-            else:
-                url = row[1]
-            # print (url)
-            # print (row[1])
-            start = time.time()
-            changedSymbol = "  "
-
-            if checkwebsite(url) == True:
-                ping = round(time.time() - start, 2)
-                if row[4] != 1:
-                    changedSymbol = "++"
-                print("Working: 1:{0} {1} {2:45}{3}".format(str(row[4]), changedSymbol, row[1], str(ping)))
-                # print ("Working: 1:" + str(row[4]) + "\t" + row[1] + "\t" + str(ping))
-                cur.execute("UPDATE proxylist SET ping='" + str(ping) + "' WHERE id=" + str(row[0]))
-            else:
-                ping = round(time.time() - start, 1)
-                if row[4] != 0:
-                    changedSymbol = "--"
-                print("Down...  0:{0} {1} {2:45}{3}".format(str(row[4]), changedSymbol, row[1], str(ping)))
-                # print ("Down...  0:" + str(row[4]) + "\t" + row[1] + "\t" + str(ping))
-                cur.execute("UPDATE proxylist SET ping='99.99' WHERE id=" + str(row[0]))
-
-        ## Check if new day
-        filetime = open(folder_path + "/time.txt", "r")
-        today = filetime.readline()
-        filetime.close()
-        if today != datetime.now().strftime('%d.%m.%Y'):
-            print("It's a new day.. You better not be up late...")
-            filetime = open(folder_path + "/time.txt", "w")
-            filetime.write(datetime.now().strftime('%d.%m.%Y'))
-            filetime.close()
-            cur.execute("UPDATE proxylist SET clicks24='0'")
-            cur.execute("UPDATE websites SET clicks24='0'")
-            print("clicks24 set to 0")
-
-        print("Shh! The script is sleeping!")
-        time.sleep(900)
-
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+        print("Shh! The script is sleeping")
+        time.sleep(check_interval)
