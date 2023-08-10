@@ -16,7 +16,7 @@ def epoch_to_timestamp_tz(epoch: int):
     if epoch > 100000000000:
         # Assuming epoch milliseconds
         epoch /= 1000
-    dt = datetime.utcfromtimestamp(epoch).astimezone()
+    dt = datetime.fromtimestamp(epoch, tz=timezone.utc)
     return dt
 
 
@@ -59,7 +59,7 @@ def check(website: dict):
     except requests.exceptions.Timeout:
         result["test_reason"] = f"Timeout {max_ping}s"
     except Exception as e:
-        result["test_reason"] = e
+        result["test_reason"] = str(e)
 
     if result["ping"] is None:
         end_time = time.time()

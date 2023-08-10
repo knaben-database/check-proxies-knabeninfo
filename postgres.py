@@ -71,9 +71,12 @@ class Postgresql:
 
         try:
             self.__cur.execute(query, data)
-        except psycopg2.errors.ForeignKeyViolation as e:
+        except Exception as e:
             self.__con.rollback()
-            raise e
+            print("ERROR: ", e)
+            print("Query: ", query)
+            print("Data:  ", data)
+            return
         rowcount = self.__cur.rowcount
         if rowcount > 0:
             print(str(rowcount) + " rows affected in table: " + sql["table"])
