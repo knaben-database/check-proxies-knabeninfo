@@ -181,7 +181,7 @@ if __name__ == '__main__':
                     query["row"]["last_active"] = epoch_to_timestamp_tz(int(datetime.now().strftime('%s')))
                 psql.update(query)
 
-        # Lastly update the last_checked for everything
+        # Update the last_checked for everything
         query = {
             "table": "website",
             "row": {
@@ -189,6 +189,9 @@ if __name__ == '__main__':
             }
         }
         psql.update(query, True)
+
+        # Update the materialized views
+        psql.refresh_view(["front_page", "website_info"])
 
         print("Shh! The script is sleeping")
         time.sleep(check_interval)

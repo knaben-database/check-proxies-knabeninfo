@@ -345,3 +345,14 @@ class Postgresql:
             if SIZE != c:
                 break
         return docs
+
+    def refresh_view(self, views: str | list):
+        if type(views) == str:
+            views = [views]
+
+        for view in views:
+            query = f"REFRESH MATERIALIZED VIEW {view}"
+            self.__cur.execute(query)
+            print(f"Refreshed materialized view {view}")
+
+        self.__con.commit()
